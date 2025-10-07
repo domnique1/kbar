@@ -1,42 +1,54 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Dimensions,
   Image,
   ImageSourcePropType,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View
 } from 'react-native';
+import { useTheme } from './contexts/ThemeContext';
 
-// Define the expected params as a record instead
+// Define the expected params
 type EventParams = Record<string, string | string[] | undefined>;
 
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
 export default function EventDetails() {
+  const { theme, isDarkMode } = useTheme();
   const params = useLocalSearchParams();
-  const { title, date, teaser, image, description } = params;
+  const { title, date, teaser, imageId, description } = params;
   const [imageLoading, setImageLoading] = useState(true);
   const [imageError, setImageError] = useState(false);
+  const [buttonScale] = useState(new Animated.Value(1));
 
+  const styles = createStyles(theme, isDarkMode);
+
+  // Simple function to get image based on imageId
   const getImageSource = (): ImageSourcePropType | null => {
-    if (!image) return null;
-
-    // Handle case where image might be an array (multiple values)
-    const imageValue = Array.isArray(image) ? image[0] : image;
-
-    if (Platform.OS === 'web' && typeof imageValue === 'object') {
-      return imageValue as ImageSourcePropType;
+    if (!imageId) return null;
+    
+    const idValue = Array.isArray(imageId) ? imageId[0] : imageId;
+    
+    switch (idValue) {
+      case 'K Frayo':
+      case '1':
+        return require('../assets/images/kwe1.jpeg');
+      case 'Happy Hour':
+      case '2':
+        return require('../assets/images/happy-hour.jpg');
+      case 'Fantastic-Saturdays':
+      case '3':
+        return require('../assets/images/kwe4.jpeg');
+      default:
+        return null;
     }
-
-    if (typeof imageValue === 'string') {
-      return { uri: imageValue };
-    }
-
-    return null;
   };
 
   const imageSource = getImageSource();
@@ -49,158 +61,367 @@ export default function EventDetails() {
     return value || '';
   };
 
+  // Format date to be more user-friendly
+  const formatDate = (dateString: string) => {
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return dateString;
+    }
+  };
+
+  // Button animation
+  const animateButton = () => {
+    Animated.sequence([
+      Animated.timing(buttonScale, {
+        toValue: 0.95,
+        duration: 100,
+        useNativeDriver: true,
+      }),
+      Animated.timing(buttonScale, {
+        toValue: 1,
+        duration: 100,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
+  const handleShare = () => {
+    animateButton();
+    console.log('Share event');
+    // Add your share logic here
+  };
+
   return (
-    <ScrollView style={styles.container}>
-      {/* Image Section */}
-      {imageSource ? (
-        <View style={styles.imageContainer}>
-          {imageLoading && !imageError && (  // Only show spinner when loading AND no error
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color="#0a84ff" />
-            </View>
-          )}
-          
-          <Image
-            source={imageSource}
-            style={styles.image}
-            resizeMode="cover"
-            onLoadStart={() => {
-              setImageLoading(true);
-              setImageError(false); // Reset error state when trying to load again
-            }}
-            onLoadEnd={() => setImageLoading(false)}
-            onError={() => {
-              setImageLoading(false);
-              setImageError(true);
-            }}
-          />
-          
-          {imageError && (
-            <View style={styles.errorOverlay}>
-              <Text style={styles.errorText}>Image failed to load</Text>
-            </View>
-          )}
-        </View>
-      ) : (
-        <View style={styles.imagePlaceholder}>
-          <Text style={styles.placeholderText}>No Image Available</Text>
-        </View>
-      )}
-
-      {/* Event Content */}
-      <View style={styles.content}>
-        <Text style={styles.title}>{getStringValue(title) || 'Event Title'}</Text>
-        
-        {date && (
-          <View style={styles.dateContainer}>
-            <MaterialCommunityIcons 
-              name="calendar" 
-              size={18} 
-              color="#0a84ff" 
-              style={styles.dateIcon}
-            />
-            <Text style={styles.date}>{getStringValue(date)}</Text>
-          </View>
-        )}
-
-        <Text style={styles.description}>
-          {getStringValue(description)?.trim() || getStringValue(teaser) || 'No details available.'}
-        </Text>
-
+    <View style={styles.container}>
+      {/* Header with Back Button */}
+      <View style={styles.header}>
         <TouchableOpacity 
-          style={styles.actionButton}
-          onPress={() => console.log('Share event')}
+          style={styles.backButton}
+          onPress={() => router.back()}
+          activeOpacity={0.7}
         >
-          <Text style={styles.actionButtonText}>Share This Event</Text>
+          <MaterialCommunityIcons 
+            name="chevron-left" 
+            size={28} 
+            color={theme.text} 
+          />
         </TouchableOpacity>
+        <Text style={styles.headerTitle}>Event Details</Text>
+        <View style={styles.headerSpacer} />
       </View>
-    </ScrollView>
+
+      <ScrollView 
+        style={styles.scrollView}
+        showsVerticalScrollIndicator={false}
+        overScrollMode="never"
+      >
+        {/* Image Section with Gradient Overlay */}
+        <View style={styles.imageContainer}>
+          {imageSource ? (
+            <>
+              {imageLoading && !imageError && (
+                <View style={styles.loadingOverlay}>
+                  <ActivityIndicator size="large" color={theme.primary} />
+                </View>
+              )}
+              
+              <Image
+                source={imageSource}
+                style={styles.image}
+                resizeMode="cover"
+                onLoadStart={() => {
+                  setImageLoading(true);
+                  setImageError(false);
+                }}
+                onLoadEnd={() => setImageLoading(false)}
+                onError={() => {
+                  setImageLoading(false);
+                  setImageError(true);
+                }}
+              />
+              
+              {imageError && (
+                <View style={styles.errorOverlay}>
+                  <MaterialCommunityIcons name="image-off" size={48} color={theme.textSecondary} />
+                  <Text style={styles.errorText}>Image failed to load</Text>
+                </View>
+              )}
+              
+              {/* Gradient Overlay using multiple views */}
+              <View style={styles.gradientOverlayTop} />
+              <View style={styles.gradientOverlayBottom} />
+            </>
+          ) : (
+            <View style={styles.imagePlaceholder}>
+              <MaterialCommunityIcons name="image-off" size={48} color={theme.textSecondary} />
+              <Text style={styles.placeholderText}>No Image Available</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Event Content Card */}
+        <View style={styles.contentCard}>
+          <View style={styles.content}>
+            <Text style={styles.title}>{getStringValue(title) || 'Event Title'}</Text>
+            
+            {date && (
+              <View style={styles.dateContainer}>
+                <View style={styles.dateIconContainer}>
+                  <MaterialCommunityIcons 
+                    name="calendar" 
+                    size={20} 
+                    color={theme.primary} 
+                  />
+                </View>
+                <Text style={styles.date}>{formatDate(getStringValue(date))}</Text>
+              </View>
+            )}
+
+            {/* Description with better typography */}
+            <View style={styles.descriptionContainer}>
+              <Text style={styles.description}>
+                {getStringValue(description)?.trim() || getStringValue(teaser) || 'No details available.'}
+              </Text>
+            </View>
+
+            {/* Action Button with animation */}
+            <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
+              <TouchableOpacity 
+                style={styles.actionButton}
+                onPress={handleShare}
+                activeOpacity={0.8}
+              >
+                <MaterialCommunityIcons 
+                  name="share-variant" 
+                  size={20} 
+                  color="#fff" 
+                  style={styles.buttonIcon}
+                />
+                <Text style={styles.actionButtonText}>Share This Event</Text>
+              </TouchableOpacity>
+            </Animated.View>
+          </View>
+        </View>
+
+        {/* Additional Info Section */}
+        <View style={styles.infoCard}>
+          <View style={styles.infoItem}>
+            <MaterialCommunityIcons 
+              name="clock-outline" 
+              size={20} 
+              color={theme.primary} 
+            />
+            <Text style={styles.infoText}>Duration: 3-4 hours</Text>
+          </View>
+          <View style={styles.infoItem}>
+            <MaterialCommunityIcons 
+              name="account-group" 
+              size={20} 
+              color={theme.primary} 
+            />
+            <Text style={styles.infoText}>All ages welcome</Text>
+          </View>
+        </View>
+      </ScrollView>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (theme: any, isDarkMode: boolean) => StyleSheet.create({
   container: { 
     flex: 1, 
-    backgroundColor: '#121212' 
+    backgroundColor: theme.background 
+  },
+  scrollView: {
+    flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 60,
+    paddingBottom: 16,
+    backgroundColor: theme.background,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.border,
+  },
+  backButton: {
+    padding: 8,
+    borderRadius: 12,
+    backgroundColor: isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)',
+  },
+  headerTitle: {
+    color: theme.text,
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  headerSpacer: {
+    width: 40,
   },
   imageContainer: {
     width: '100%',
-    height: 220,
+    height: 280,
     position: 'relative',
-    borderBottomWidth: 1,
-    borderBottomColor: '#333',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
   },
   image: {
     width: '100%',
     height: '100%',
   },
+  // Gradient overlay using solid colors with opacity
+  gradientOverlayTop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 80,
+    backgroundColor: isDarkMode ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.2)',
+  },
+  gradientOverlayBottom: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 120,
+    backgroundColor: isDarkMode ? 'rgba(0,0,0,0.7)' : 'rgba(0,0,0,0.4)',
+  },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.3)',
+    backgroundColor: isDarkMode ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)',
   },
   errorOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(30,30,30,0.7)',
+    backgroundColor: isDarkMode ? 'rgba(30,30,30,0.9)' : 'rgba(240,240,240,0.9)',
   },
   errorText: {
-    color: '#ff5555',
+    color: theme.error,
     fontWeight: 'bold',
+    marginTop: 8,
   },
   imagePlaceholder: {
     width: '100%',
-    height: 220,
-    backgroundColor: '#1f1f1f',
+    height: 280,
+    backgroundColor: isDarkMode ? theme.surface : theme.surfaceVariant,
     justifyContent: 'center',
     alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: '#333',
   },
   placeholderText: {
-    color: '#666',
+    color: theme.textSecondary,
     fontSize: 16,
+    marginTop: 8,
+  },
+  contentCard: {
+    backgroundColor: theme.surface,
+    marginHorizontal: 16,
+    marginTop: -20,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: theme.border,
   },
   content: { 
-    padding: 20 
+    padding: 24,
   },
   title: {
-    color: '#fff',
-    fontSize: 28,
+    color: theme.text,
+    fontSize: 32,
     fontWeight: 'bold',
-    marginBottom: 12,
+    marginBottom: 16,
+    lineHeight: 38,
   },
   dateContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 20,
+    backgroundColor: isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
+    padding: 12,
+    borderRadius: 12,
   },
-  dateIcon: {
-    marginRight: 8,
+  dateIconContainer: {
+    padding: 8,
+    backgroundColor: isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)',
+    borderRadius: 8,
+    marginRight: 12,
   },
   date: { 
-    color: '#bbb', 
-    fontSize: 16 
+    color: theme.textSecondary, 
+    fontSize: 15,
+    fontWeight: '500',
+    flex: 1,
+    lineHeight: 20,
   },
-  description: { 
-    color: '#ddd', 
-    fontSize: 16, 
-    lineHeight: 24,
+  descriptionContainer: {
     marginBottom: 24,
   },
+  description: { 
+    color: theme.text,
+    fontSize: 16, 
+    lineHeight: 24,
+    letterSpacing: 0.3,
+  },
   actionButton: {
-    backgroundColor: '#0a84ff',
-    paddingVertical: 12,
+    backgroundColor: theme.primary,
+    paddingVertical: 16,
     paddingHorizontal: 24,
-    borderRadius: 8,
-    alignSelf: 'flex-start',
-    marginTop: 16,
+    borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: theme.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  buttonIcon: {
+    marginRight: 8,
   },
   actionButtonText: {
     color: '#fff',
     fontWeight: '600',
     fontSize: 16,
+    letterSpacing: 0.5,
+  },
+  infoCard: {
+    backgroundColor: theme.surface,
+    marginHorizontal: 16,
+    marginVertical: 20,
+    padding: 20,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.border,
+  },
+  infoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  infoText: {
+    color: theme.textSecondary,
+    fontSize: 14,
+    marginLeft: 12,
+    fontWeight: '500',
   },
 });

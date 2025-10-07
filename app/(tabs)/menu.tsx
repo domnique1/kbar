@@ -1,11 +1,13 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocalSearchParams, usePathname, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Animated,
   Image,
   ImageSourcePropType,
+  RefreshControl,
   SectionList,
   SectionListData,
   StyleSheet,
@@ -14,6 +16,18 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useTheme } from '../contexts/ThemeContext';
+import { triggerBadgeRefresh } from '../hooks/useTabBadges';
+
+// Define shared order status types
+type OrderStatus = 
+  | 'pending_payment'
+  | 'payment_processing' 
+  | 'payment_failed'
+  | 'preparing'
+  | 'ready'
+  | 'completed'
+  | 'cancelled';
 
 interface MenuItem {
   id: string;
@@ -37,7 +51,7 @@ interface Order {
   orderNumber: string;
   items: OrderItem[];
   total: number;
-  status: string;
+  status: OrderStatus;
   timestamp: string;
   type: string;
 }
@@ -45,6 +59,14 @@ interface Order {
 interface MenuSection {
   title: string;
   data: MenuItem[];
+}
+
+interface CartItem {
+  id: string;
+  name: string;
+  price: number;
+  quantity: number;
+  emoji: string;
 }
 
 type Router = {
@@ -146,7 +168,7 @@ const prepareSections = (items: MenuItem[]): MenuSection[] => {
   }));
 };
 
-// Store order function (same as quick-order.js)
+// Store order function
 const storeOrder = async (newOrder: Order): Promise<boolean> => {
   try {
     const existingOrders = JSON.parse(await AsyncStorage.getItem('userOrders') || '[]');
@@ -174,12 +196,51 @@ const getItemEmoji = (itemName: string): string => {
   return emojiMap[itemName] || '🍽️';
 };
 
+// Get cart items count
+const getCartItemsCount = async (): Promise<number> => {
+  try {
+    const cartItems = JSON.parse(await AsyncStorage.getItem('userCart') || '[]');
+    return cartItems.reduce((total: number, item: CartItem) => total + item.quantity, 0);
+  } catch (error) {
+    console.error('Error getting cart count:', error);
+    return 0;
+  }
+};
+
+// Check for existing unpaid orders
+const checkExistingUnpaidOrder = async (): Promise<Order | null> => {
+  try {
+    const storedOrders = await AsyncStorage.getItem('userOrders');
+    if (storedOrders) {
+      const orders: Order[] = JSON.parse(storedOrders);
+      const unpaidOrder = orders.find(order => 
+        order.status === 'pending_payment' || 
+        order.status === 'payment_processing'
+      );
+      return unpaidOrder || null;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error checking for unpaid orders:', error);
+    return null;
+  }
+};
+
 export default function MenuScreen() {
+  const { theme, isDarkMode } = useTheme();
   const [searchQuery, setSearchQuery] = useState('');
-  // Fix: Use MenuSection as the second generic type parameter
+  const [cartItemsCount, setCartItemsCount] = useState(0);
+  const [showBanner, setShowBanner] = useState(false);
+  const [bannerMessage, setBannerMessage] = useState('');
+  const [orderCreated, setOrderCreated] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const bannerAnimation = useRef(new Animated.Value(0)).current;
   const flatListRef = useRef<SectionList<MenuItem, MenuSection>>(null);
   const router = useRouter() as Router;
   const params = useLocalSearchParams();
+  const pathname = usePathname();
+
+  const styles = createMainStyles(theme, isDarkMode);
 
   // Prepare and filter sections
   const menuSections = useMemo(() => prepareSections(menuItems), []);
@@ -196,6 +257,32 @@ export default function MenuScreen() {
       }))
       .filter(section => section.data.length > 0);
   }, [menuSections, searchQuery]);
+
+  // Load cart items count on mount
+  useEffect(() => {
+    loadCartItemsCount();
+  }, []);
+
+  // Show/hide banner animation
+  useEffect(() => {
+    if (showBanner) {
+      Animated.sequence([
+        Animated.timing(bannerAnimation, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+        Animated.delay(2500),
+        Animated.timing(bannerAnimation, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
+        setShowBanner(false);
+      });
+    }
+  }, [showBanner, bannerAnimation]);
 
   // Scroll to category effect
   useEffect(() => {
@@ -218,20 +305,70 @@ export default function MenuScreen() {
     }
   }, [params, filteredSections]);
 
-  const placeOrder = async (item: MenuItem) => {
+  // ORDER CONFIRMATION ALERT EFFECT - ADDED BACK
+  useEffect(() => {
+    if (params.orderCreated === 'true') {
+      // Use a state to trigger the alert to avoid issues with navigation during render
+      setOrderCreated(true);
+      // Clear the URL parameter immediately
+      router.replace(pathname);
+    }
+  }, [params.orderCreated, pathname]);
+
+  // Show the confirmation alert when orderCreated state changes
+  useEffect(() => {
+    if (orderCreated) {
+      Alert.alert(
+        "Order Saved! ✅",
+        "Your order has been saved. You can complete payment anytime from the Orders tab.",
+        [{ 
+          text: "OK", 
+          onPress: () => setOrderCreated(false)
+        }]
+      );
+    }
+  }, [orderCreated]);
+
+  const loadCartItemsCount = async () => {
+    const count = await getCartItemsCount();
+    setCartItemsCount(count);
+  };
+
+  // Pull to refresh function - Updated to match QuickOrderScreen style
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    // Simulate refresh without showing banner message
+    setTimeout(() => {
+      setRefreshing(false);
+    }, 1000);
+  }, []);
+
+  const placeOrder = async (item: MenuItem, quantity: number) => {
     try {
-      // Create order object with orderNumber instead of just id
+      // Check for existing unpaid orders
+      const existingUnpaidOrder = await checkExistingUnpaidOrder();
+      if (existingUnpaidOrder) {
+        Alert.alert(
+          "Pending Payment",
+          `You have an unpaid order (#${existingUnpaidOrder.orderNumber}). 
+          Please complete payment before creating a new order.`,
+          [{ text: "OK", onPress: () => router.push('/(tabs)/orders') }]
+        );
+        return;
+      }
+
+      // Create order object with the correct quantity
       const orderId = Math.random().toString(36).substring(2, 9);
       const newOrder: Order = {
         id: orderId,
-        orderNumber: orderId, // Add this line - orders.js expects orderNumber
+        orderNumber: orderId,
         items: [{
           ...item,
-          quantity: 1,
+          quantity: quantity, // Use the passed quantity instead of hardcoded 1
           emoji: getItemEmoji(item.name)
         }],
-        total: item.price,
-        status: 'preparing',
+        total: item.price * quantity, // Calculate total based on quantity
+        status: 'pending_payment',
         timestamp: new Date().toISOString(),
         type: 'menu'
       };
@@ -240,19 +377,22 @@ export default function MenuScreen() {
       const success = await storeOrder(newOrder);
       
       if (success) {
+        // Trigger badge update for new unpaid order
+        triggerBadgeRefresh();
+        
         // Show success alert with option to view orders
         Alert.alert(
           "Order Placed! 🎉",
-          `Your ${item.name} has been added to your orders.`,
+          `Your ${quantity} ${item.name}${quantity > 1 ? 's' : ''} has been added to your orders. Please complete payment.`,
           [
             {
               text: "View Orders",
               onPress: () => router.push("/(tabs)/orders"),
-              style: "default" as const
+              style: "default"
             },
             { 
               text: "Continue Browsing", 
-              style: "cancel" as const
+              style: "cancel"
             }
           ]
         );
@@ -266,48 +406,140 @@ export default function MenuScreen() {
     }
   };
 
-  const renderItem = ({ item }: { item: MenuItem }) => (
-    <View style={styles.card}>
-      <View style={styles.imageContainer}>
-        <Image source={item.image} style={styles.image} resizeMode="cover" />
-      </View>
+  const addToCart = async (item: MenuItem, quantity: number) => {
+    try {
+      const cartItems: CartItem[] = JSON.parse(await AsyncStorage.getItem('userCart') || '[]');
+      const existingItemIndex = cartItems.findIndex(cartItem => cartItem.id === item.id);
       
-      <View style={styles.info}>
-        <View style={styles.headerRow}>
-          <Text style={styles.name}>{item.name}</Text>
-          <Text style={styles.price}>${item.price.toFixed(2)}</Text>
-        </View>
-        
-        <View style={[styles.badge, styles.categoryBadge]}>
-          <Text style={styles.categoryText}>{item.category}</Text>
-        </View>
-        
-        <Text style={styles.description}>{item.description}</Text>
-        
-        <TouchableOpacity
-          style={styles.button}
-          onPress={() => placeOrder(item)}
-        >
-          <Text style={styles.buttonText}>Order Now</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
+      if (existingItemIndex !== -1) {
+        // Update quantity if item already exists
+        cartItems[existingItemIndex].quantity += quantity;
+      } else {
+        // Add new item to cart
+        cartItems.push({
+          id: item.id,
+          name: item.name,
+          price: item.price,
+          quantity,
+          emoji: getItemEmoji(item.name)
+        });
+      }
+      
+      await AsyncStorage.setItem('userCart', JSON.stringify(cartItems));
+      
+      // Update cart count
+      const newCount = cartItems.reduce((total, item) => total + item.quantity, 0);
+      setCartItemsCount(newCount);
 
-   const renderSectionHeader = ({ section }: { section: SectionListData<MenuItem, MenuSection> }) => (
+      // Trigger real-time badge update
+      triggerBadgeRefresh();
+      
+      // Show banner
+      setBannerMessage(`${quantity} ${item.name}${quantity > 1 ? 's' : ''} added to cart! Keep browsing or go to Cart to review items 🛒`);
+      setShowBanner(true);
+      
+    } catch (error) {
+      console.error('Error adding to cart:', error);
+      Alert.alert("Error", "Failed to add item to cart. Please try again.");
+    }
+  };
+
+  const renderItem = ({ item }: { item: MenuItem }) => {
+    const [quantity, setQuantity] = useState(1);
+    
+    const increaseQuantity = () => setQuantity(prev => prev + 1);
+    const decreaseQuantity = () => setQuantity(prev => Math.max(1, prev - 1));
+    
+    return (
+      <View style={styles.card}>
+        <View style={styles.imageContainer}>
+          <Image source={item.image} style={styles.image} resizeMode="cover" />
+        </View>
+        
+        <View style={styles.info}>
+          <View style={styles.headerRow}>
+            <Text style={styles.name}>{item.name}</Text>
+            <Text style={styles.price}>${item.price.toFixed(2)}</Text>
+          </View>
+          
+          <View style={[styles.badge, styles.categoryBadge]}>
+            <Text style={styles.categoryText}>{item.category}</Text>
+          </View>
+          
+          <Text style={styles.description}>{item.description}</Text>
+          
+          {/* Updated Quantity Selector - Matching Quick Order Screen */}
+          <View style={styles.quantityContainer}>
+            <TouchableOpacity 
+              style={[styles.quantityButton, quantity <= 1 && styles.quantityButtonDisabled]} 
+              onPress={decreaseQuantity}
+              disabled={quantity <= 1}
+            >
+              <MaterialCommunityIcons name="minus" size={16} color="#fff" />
+            </TouchableOpacity>
+            
+            <Text style={styles.quantityText}>{quantity}</Text>
+            
+            <TouchableOpacity 
+              style={styles.quantityButton} 
+              onPress={increaseQuantity}
+            >
+              <MaterialCommunityIcons name="plus" size={16} color="#fff" />
+            </TouchableOpacity>
+          </View>
+          
+          {/* Buttons Row */}
+          <View style={styles.buttonsRow}>
+            <TouchableOpacity
+              style={[styles.button, styles.orderButton]}
+              onPress={() => placeOrder(item, quantity)} // Fixed parameter passing
+            >
+              <Text style={styles.buttonText}>Order Now</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={[styles.button, styles.cartButton]}
+              onPress={() => addToCart(item, quantity)}
+            >
+              <Text style={styles.buttonText}>Add to Cart</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const renderSectionHeader = ({ section }: { section: SectionListData<MenuItem, MenuSection> }) => (
     <View style={styles.sectionHeader}>
       <Text style={styles.sectionHeaderText}>{section.title}</Text>
     </View>
   );
 
+  const bannerTranslateY = bannerAnimation.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-100, 0],
+  });
+
   return (
     <View style={styles.container}>
+      {/* Feedback Banner */}
+      {showBanner && (
+        <Animated.View 
+          style={[
+            styles.banner,
+            { transform: [{ translateY: bannerTranslateY }] }
+          ]}
+        >
+          <Text style={styles.bannerText}>{bannerMessage}</Text>
+        </Animated.View>
+      )}
+
       {/* Search Bar */}
       <View style={styles.searchContainer}>
         <TextInput
           style={styles.searchInput}
           placeholder="Search menu items..."
-          placeholderTextColor="#999"
+          placeholderTextColor={theme.textSecondary}
           value={searchQuery}
           onChangeText={setSearchQuery}
         />
@@ -316,10 +548,10 @@ export default function MenuScreen() {
             style={styles.clearSearch} 
             onPress={() => setSearchQuery('')}
           >
-            <MaterialCommunityIcons name="close" size={20} color="#888" />
+            <MaterialCommunityIcons name="close" size={20} color={theme.textSecondary} />
           </TouchableOpacity>
         ) : (
-          <MaterialCommunityIcons name="magnify" size={20} color="#888" />
+          <MaterialCommunityIcons name="magnify" size={20} color={theme.textSecondary} />
         )}
       </View>
 
@@ -332,8 +564,17 @@ export default function MenuScreen() {
         renderSectionHeader={renderSectionHeader}
         stickySectionHeadersEnabled={true}
         contentContainerStyle={styles.listContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[theme.primary]}
+            tintColor={theme.primary}
+            title="Pull to refresh"
+            titleColor={theme.textSecondary}
+          />
+        }
         onScrollToIndexFailed={(info) => {
-          // Use scrollToLocation for SectionList instead of scrollToOffset
           flatListRef.current?.scrollToLocation({
             sectionIndex: info.index,
             itemIndex: 0,
@@ -346,22 +587,24 @@ export default function MenuScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const createMainStyles = (theme: any, isDarkMode: boolean) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: theme.background,
   },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#222',
+    backgroundColor: isDarkMode ? '#222' : theme.surface,
     borderRadius: 8,
     margin: 16,
     paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: theme.border,
   },
   searchInput: {
     flex: 1,
-    color: '#fff',
+    color: theme.text,
     height: 48,
     paddingRight: 8,
   },
@@ -373,16 +616,18 @@ const styles = StyleSheet.create({
   },
   card: {
     flexDirection: 'row',
-    backgroundColor: '#222',
+    backgroundColor: isDarkMode ? '#222' : theme.surface,
     borderRadius: 10,
     marginHorizontal: 16,
     marginBottom: 16,
     overflow: 'hidden',
     elevation: 3,
-    shadowColor: '#000',
+    shadowColor: isDarkMode ? '#000' : theme.primary,
     shadowOpacity: 0.2,
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 2 },
+    borderWidth: 1,
+    borderColor: theme.border,
   },
   imageContainer: {
     position: 'relative',
@@ -406,17 +651,17 @@ const styles = StyleSheet.create({
   name: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#fff',
+    color: theme.text,
     flexShrink: 1,
   },
   price: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#0a84ff',
+    color: theme.primary,
     marginLeft: 8,
   },
   description: {
-    color: '#bbb',
+    color: theme.textSecondary,
     fontSize: 14,
     marginVertical: 8,
   },
@@ -425,16 +670,72 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
   },
+  // Updated Quantity Controls to match Quick Order Screen
+  quantityContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: isDarkMode ? '#333' : theme.surfaceVariant,
+    borderRadius: 20,
+    padding: 4,
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+  },
+  quantityButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: theme.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  quantityButtonDisabled: {
+    backgroundColor: isDarkMode ? '#555' : '#ccc',
+  },
+  quantityText: {
+    color: theme.text,
+    fontWeight: '600',
+    marginHorizontal: 12,
+    minWidth: 20,
+    textAlign: 'center',
+    fontSize: 14,
+  },
+  buttonsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
   button: {
-    backgroundColor: '#0a84ff',
-    paddingVertical: 8,
+    flex: 1,
+    paddingVertical: 10,
     borderRadius: 6,
     alignItems: 'center',
-    marginTop: 8,
+    justifyContent: 'center',
+  },
+  orderButton: {
+    backgroundColor: isDarkMode ? '#ff4757' : '#ff6b6b',
+  },
+  cartButton: {
+    backgroundColor: theme.primary,
   },
   buttonText: {
     color: '#fff',
     fontWeight: 'bold',
+    fontSize: 14,
+  },
+  banner: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: isDarkMode ? '#27ae60' : '#4caf50',
+    padding: 16,
+    zIndex: 1000,
+  },
+  bannerText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '500',
+    textAlign: 'center',
   },
   badge: {
     position: 'absolute',
@@ -456,7 +757,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   categoryBadge: {
-    backgroundColor: '#1e90ff',
+    backgroundColor: theme.primary,
     alignSelf: 'flex-start',
     position: 'relative',
     top: 0,
@@ -469,14 +770,14 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   sectionHeader: {
-    backgroundColor: '#121212',
+    backgroundColor: theme.background,
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#333',
+    borderBottomColor: theme.border,
   },
   sectionHeaderText: {
-    color: '#0a84ff',
+    color: theme.primary,
     fontSize: 18,
     fontWeight: 'bold',
   },

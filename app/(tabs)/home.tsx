@@ -1,14 +1,12 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
+  Dimensions,
   FlatList,
   Image,
-  NativeScrollEvent,
-  NativeSyntheticEvent,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,23 +17,33 @@ import {
 } from 'react-native';
 import Animated, {
   Easing,
+  interpolate,
+  runOnJS,
+  useAnimatedScrollHandler,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
-  withTiming
+  withTiming,
 } from 'react-native-reanimated';
+import { useTheme } from '../contexts/ThemeContext';
 
-// 1. Define TypeScript Interfaces
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+// Enhanced Interfaces
 interface Category {
   id: string;
   name: string;
   image: any;
+  popularity?: number;
+  isTrending?: boolean;
 }
 
 interface Promotion {
   id: string;
   text: string;
   image: any;
+  badge?: string;
+  gradient?: readonly [string, string, ...string[]];
 }
 
 interface Event {
@@ -45,109 +53,193 @@ interface Event {
   teaser: string;
   image: any;
   description?: string;
+  countdown?: string;
+  isLive?: boolean;
 }
 
+// Loyalty System Interface from Settings
+interface LoyaltyInfo {
+  points: number;
+  tier: string;
+  hasOrders: boolean;
+}
+
+// Enhanced Props
 interface PromoCardProps {
   item: Promotion;
-  isActive: boolean;
+  index: number;
+  scrollX: Animated.SharedValue<number>;
+  theme: any;
+  isDarkMode: boolean;
 }
 
 interface CategoryTileProps {
   item: Category;
-  imagesLoaded: boolean;
-  handleImageLoad: () => void;
+  theme: any;
+  isDarkMode: boolean;
 }
 
 interface EventCardProps {
   item: Event;
+  theme: any;
+  isDarkMode: boolean;
 }
 
-// Utility function
-function getImageUri(image: any): string {
-  if (typeof image === 'string') return image;
+// Fixed gradient definitions with professional blue for light mode
+const PROMO_GRADIENTS = {
+  primary: ['#667eea', '#764ba2'] as const,
+  secondary: ['#f093fb', '#f5576c'] as const,
+  accent: ['#4facfe', '#00f2fe'] as const,
+};
 
-  if (Platform.OS === 'web') {
-    return image?.default || image;
-  } else {
-    return Image.resolveAssetSource(image).uri;
-  }
-}
+const HERO_GRADIENTS = {
+  light: ['#00ADEF', '#2b5876'] as const, // Professional blue gradient
+  dark: ['#1a1a2e', '#16213e'] as const,
+};
 
-// Sample Data
+// Enhanced Sample Data - USING ONLY EXISTING IMAGES
 const categories: Category[] = [
-  { id: '1', name: 'Cocktails', image: require('../../assets/images/cocktail.jpg') },
-  { id: '2', name: 'Beers', image: require('../../assets/images/beer.png') },
-  { id: '3', name: 'Snacks', image: require('../../assets/images/snacks.jpg') },
-  { id: '4', name: 'Specials', image: require('../../assets/images/specials.jpg') },
+  { id: '1', name: 'Cocktails', image: require('../../assets/images/cocktail.jpg'), popularity: 95, isTrending: true },
+  { id: '2', name: 'Craft Beers', image: require('../../assets/images/beer.png'), popularity: 88 },
+  { id: '3', name: 'Snacks', image: require('../../assets/images/snacks.jpg'), popularity: 76 },
+  { id: '4', name: 'Specials', image: require('../../assets/images/specials.jpg'), popularity: 92, isTrending: true },
+  { id: '5', name: 'Happy Hour', image: require('../../assets/images/happy-hour.jpg'), popularity: 82 },
+  { id: '6', name: 'Events', image: require('../../assets/images/kwe1.jpeg'), popularity: 78 },
 ];
 
 const promotions: Promotion[] = [
-  { id: '1', text: 'Get 10% off on all cocktails this weekend!', image: require('../../assets/images/cocktail-promo.jpg') },
-  { id: '2', text: 'Happy Hour: 2-for-1 beers 4-6pm daily', image: require('../../assets/images/beer-promo.jpg') },
-  { id: '3', text: 'Free snacks with 3+ drink orders', image: require('../../assets/images/snack-promo.jpg') },
+  { 
+    id: '1', 
+    text: 'Get 10% off on all cocktails this weekend!', 
+    image: require('../../assets/images/cocktail-promo.jpg'),
+    badge: 'Limited Time',
+    gradient: PROMO_GRADIENTS.primary
+  },
+  { 
+    id: '2', 
+    text: 'Happy Hour: 2-for-1 beers 4-6pm daily', 
+    image: require('../../assets/images/beer-promo.jpg'),
+    badge: 'Daily Deal',
+    gradient: PROMO_GRADIENTS.secondary
+  },
+  { 
+    id: '3', 
+    text: 'Free snacks with 3+ drink orders', 
+    image: require('../../assets/images/snack-promo.jpg'),
+    badge: 'Popular',
+    gradient: PROMO_GRADIENTS.accent
+  },
 ];
 
 const events: Event[] = [
   {
     id: '1',
-    title: 'K Frayo',
+    title: 'K Frayo Live',
     date: 'Fri, Aug 15 • 8 PM',
     teaser: 'Crazy mixes & special cocktails!',
     image: require('../../assets/images/kwe1.jpeg'),
+    countdown: '2 days left',
+    isLive: true,
   },
   {
     id: '2',
-    title: 'Happy Hour',
+    title: 'Happy Hour Madness',
     date: 'Mon-Fri • 4-6 PM',
     teaser: '2-for-1 beers and discounted snacks.',
     image: require('../../assets/images/happy-hour.jpg'),
+    isLive: false,
   },
   {
     id: '3',
-    title: 'Fantastic-Saturdays',
-    date: 'Every Sato • 7pm till late',
-    teaser: 'Unmissable.',
+    title: 'Fantastic Saturdays',
+    date: 'Every Saturday • 7pm till late',
+    teaser: 'Unmissable night with DJ sets',
     image: require('../../assets/images/kwe4.jpeg'),
+    countdown: 'This Saturday',
+    isLive: false,
   },
 ];
 
-// Components
-function PromoCard({ item, isActive }: PromoCardProps) {
+// Enhanced PromoCard with Parallax
+function EnhancedPromoCard({ item, index, scrollX, theme, isDarkMode }: PromoCardProps) {
   const [isPressed, setIsPressed] = useState(false);
+  
+  const inputRange = [
+    (index - 1) * SCREEN_WIDTH,
+    index * SCREEN_WIDTH,
+    (index + 1) * SCREEN_WIDTH,
+  ];
+
+  const animatedStyle = useAnimatedStyle(() => {
+    const scale = interpolate(
+      scrollX.value,
+      inputRange,
+      [0.9, 1, 0.9],
+      'clamp'
+    );
+
+    const opacity = interpolate(
+      scrollX.value,
+      inputRange,
+      [0.6, 1, 0.6],
+      'clamp'
+    );
+
+    return {
+      transform: [{ scale }],
+      opacity,
+    };
+  });
+
+  const styles = createPromoCardStyles(theme, isDarkMode);
 
   return (
-    <Pressable
-      onPressIn={() => setIsPressed(true)}
-      onPressOut={() => setIsPressed(false)}
-      style={[
-        styles.promoCard, 
-        isPressed && styles.pressedShadow,
-        isActive && styles.activePromo
-      ]}
-      accessibilityLabel={`Promotion: ${item.text}`}
-      accessibilityHint="Tap to learn more about this promotion"
-    >
-      <Image
-        source={item.image}
-        style={styles.promoImage}
-        resizeMode="cover"
-      />
-      <View style={styles.promoTextContainer}>
-        <Text style={styles.promoText}>{item.text}</Text>
-      </View>
-    </Pressable>
+    <Animated.View style={[styles.promoCardContainer, animatedStyle]}>
+      <Pressable
+        onPressIn={() => setIsPressed(true)}
+        onPressOut={() => setIsPressed(false)}
+        style={[
+          styles.promoCard,
+          isPressed && styles.pressedShadow,
+        ]}
+      >
+        <LinearGradient
+          colors={item.gradient || PROMO_GRADIENTS.primary}
+          style={styles.promoGradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+        >
+          <Image
+            source={item.image}
+            style={styles.promoImage}
+            resizeMode="cover"
+          />
+          <View style={styles.promoOverlay} />
+          
+          {item.badge && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{item.badge}</Text>
+            </View>
+          )}
+          
+          <View style={styles.promoTextContainer}>
+            <Text style={styles.promoText}>{item.text}</Text>
+            <View style={styles.promoCta}>
+              <Text style={styles.promoCtaText}>Claim Offer</Text>
+              <MaterialCommunityIcons name="arrow-right" size={16} color="#fff" />
+            </View>
+          </View>
+        </LinearGradient>
+      </Pressable>
+    </Animated.View>
   );
 }
 
-function CategoryTile({ item, imagesLoaded, handleImageLoad }: CategoryTileProps) {
+// Enhanced Category Tile
+function EnhancedCategoryTile({ item, theme, isDarkMode }: CategoryTileProps) {
   const [isPressed, setIsPressed] = useState(false);
-  const [imageLoaded, setImageLoaded] = useState(false);
   const router = useRouter();
-
-  const handleImageLoadComplete = () => {
-    setImageLoaded(true);
-    if (handleImageLoad) handleImageLoad();
-  };
+  const styles = createCategoryTileStyles(theme, isDarkMode);
 
   return (
     <Pressable
@@ -159,502 +251,799 @@ function CategoryTile({ item, imagesLoaded, handleImageLoad }: CategoryTileProps
       onPressOut={() => setIsPressed(false)}
       style={[styles.categoryTile, isPressed && styles.pressedShadow]}
     >
-      {!imageLoaded && (
-        <View style={styles.imagePlaceholder}>
-          <ActivityIndicator size="small" color="#0a84ff" />
+      <View style={styles.categoryImageContainer}>
+        <Image
+          source={item.image}
+          style={styles.categoryImage}
+        />
+        {item.isTrending && (
+          <View style={styles.trendingBadge}>
+            <MaterialCommunityIcons name="fire" size={12} color="#fff" />
+          </View>
+        )}
+        <View style={styles.popularityBar}>
+          <View 
+            style={[
+              styles.popularityFill,
+              { 
+                transform: [
+                  { 
+                    scaleX: item.popularity 
+                      ? Math.max(0, Math.min(1, item.popularity / 100)) 
+                      : 0 
+                  }
+                ] 
+              }
+            ]} 
+          />
         </View>
-      )}
-      <Image
-        source={item.image}
-        style={styles.categoryImage}
-        onLoad={handleImageLoadComplete}
-      />
+      </View>
       <Text style={styles.categoryText}>{item.name}</Text>
+      <Text style={styles.popularityText}>{item.popularity}% popular</Text>
     </Pressable>
   );
 }
 
-function EventCard({ item }: EventCardProps) {
+// Enhanced Event Card
+function EnhancedEventCard({ item, theme, isDarkMode }: EventCardProps) {
   const [isPressed, setIsPressed] = useState(false);
   const router = useRouter();
+  const styles = createEventCardStyles(theme, isDarkMode);
 
   return (
     <Pressable
-      onPress={() =>
-        router.push({
-          pathname: '/eventdetails',
-          params: {
-            title: item.title,
-            date: item.date,
-            teaser: item.teaser,
-            description: item.description || '',
-            image: getImageUri(item.image),
-          },
-        })
-      }
+      onPress={() => router.push('/eventdetails')}
       onPressIn={() => setIsPressed(true)}
       onPressOut={() => setIsPressed(false)}
-      style={[
-        styles.eventCard,
-        isPressed && styles.pressedShadow,
-      ]}
-      accessibilityLabel={`Event: ${item.title}`}
-      accessibilityHint="Tap to learn more about this event"
+      style={[styles.eventCard, isPressed && styles.pressedShadow]}
     >
-      <Image source={item.image} style={styles.eventImage} resizeMode="cover" />
-      <View style={styles.eventTextContainer}>
-        <Text style={styles.eventTitle}>{item.title}</Text>
-        <Text style={styles.eventDate}>{item.date}</Text>
-        <Text style={styles.eventTeaser}>{item.teaser}</Text>
-        <Text style={styles.eventButton}>Learn More</Text>
-      </View>
+      <Image source={item.image} style={styles.eventImage} />
+      
+      {item.isLive && (
+        <View style={styles.liveBadge}>
+          <View style={styles.livePulse} />
+          <Text style={styles.liveText}>LIVE</Text>
+        </View>
+      )}
+      
+      <LinearGradient
+        colors={['transparent', 'rgba(0,0,0,0.8)'] as const}
+        style={styles.eventGradient}
+      >
+        <View style={styles.eventContent}>
+          <View>
+            <Text style={styles.eventTitle}>{item.title}</Text>
+            <Text style={styles.eventDate}>{item.date}</Text>
+            <Text style={styles.eventTeaser}>{item.teaser}</Text>
+          </View>
+          
+          <View style={styles.eventFooter}>
+            {item.countdown && (
+              <Text style={styles.countdownText}>{item.countdown}</Text>
+            )}
+            <View style={styles.eventButton}>
+              <Text style={styles.eventButtonText}>Details</Text>
+              <MaterialCommunityIcons name="chevron-right" size={16} color={theme.primary} />
+            </View>
+          </View>
+        </View>
+      </LinearGradient>
     </Pressable>
   );
 }
 
-export default function HomeScreen() {
+// Loyalty Display Component with proper logic from Settings
+function LoyaltyDisplay({ loyaltyInfo }: { loyaltyInfo: LoyaltyInfo }) {
+  const styles = createLoyaltyStyles();
+
+  if (!loyaltyInfo.hasOrders) {
+    return (
+      <View style={styles.loyaltyContainer}>
+        <Text style={styles.welcomeMessage}>
+          🎉 Welcome to K Bar! 
+        </Text>
+        <Text style={styles.earnPointsText}>
+          Start ordering to earn points and unlock rewards!
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.loyaltyContainer}>
+      <Text style={styles.userPoints}>{loyaltyInfo.points} Points</Text>
+      <Text style={styles.userTier}>• {loyaltyInfo.tier}</Text>
+    </View>
+  );
+}
+
+export default function EnhancedHomeScreen() {
+  const { theme, isDarkMode } = useTheme();
   const router = useRouter();
+  
   // State
   const [search, setSearch] = useState<string>('');
-  const [imagesLoaded, setImagesLoaded] = useState<boolean>(false);
   const [currentPromoIndex, setCurrentPromoIndex] = useState<number>(0);
-
-  // Animation setup
+  const [isAutoScrolling, setIsAutoScrolling] = useState<boolean>(true);
+  const [loyaltyInfo, setLoyaltyInfo] = useState<LoyaltyInfo>({
+    points: 0,
+    tier: "KBar Member",
+    hasOrders: false
+  });
+  
+  // Animation values
+  const scrollX = useSharedValue(0);
   const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
   const scaleValue = useSharedValue(1);
-  const elevationValue = useSharedValue(5);
 
-  useEffect(() => {
-    scaleValue.value = withRepeat(
-      withTiming(1.1, {
-        duration: 1500,
-        easing: Easing.ease,
-      }),
-      -1,
-      true,
-    );
-  }, []);
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scaleValue.value }],
-    elevation: elevationValue.value,
-    shadowOpacity: elevationValue.value / 10,
-  }));
-
-  const pressIn = () => {
-    elevationValue.value = withTiming(8, { duration: 100 });
-  };
-
-  const pressOut = () => {
-    elevationValue.value = withTiming(5, { duration: 200 });
-  };
-
-  
-  // Refs
+  // Refs - Using number type for React Native compatibility
   const promoFlatListRef = useRef<FlatList>(null);
   const scrollInterval = useRef<number | null>(null);
-// Effects
-useEffect(() => {
-  const startAutoScroll = () => {
-    scrollInterval.current = setInterval(() => {
-      setCurrentPromoIndex(prev => {
-        const nextIndex = (prev + 1) % promotions.length;
-        promoFlatListRef.current?.scrollToIndex({
-          index: nextIndex,
-          animated: true,
-        });
-        return nextIndex;
+  const autoScrollTimeout = useRef<number | null>(null);
+
+  // Load loyalty data from AsyncStorage (same as settings screen)
+  const loadLoyaltyData = async () => {
+    try {
+      const savedLoyaltyPoints = await AsyncStorage.getItem('userLoyaltyPoints');
+      const savedOrders = await AsyncStorage.getItem('userOrders');
+      
+      let points = 0;
+      let hasOrders = false;
+
+      if (savedLoyaltyPoints !== null) {
+        points = JSON.parse(savedLoyaltyPoints);
+      }
+
+      if (savedOrders !== null) {
+        const orders = JSON.parse(savedOrders);
+        hasOrders = orders && orders.length > 0;
+      }
+
+      // Determine tier using the same logic as settings screen
+      const tier = getLoyaltyTier(points);
+
+      setLoyaltyInfo({
+        points,
+        tier,
+        hasOrders
       });
-    }, 3000);
+    } catch (error) {
+      console.error('Error loading loyalty data:', error);
+    }
   };
 
-  startAutoScroll();
+  // Loyalty tier logic from settings screen
+  const getLoyaltyTier = (points: number): string => {
+    if (points === 0) return "KBar Member";
+    if (points < 10) return "KBar Member";    // 0-9 points
+    if (points < 100) return "Bronze Member"; // 10-99 points
+    if (points < 250) return "Silver Member"; // 100-249 points
+    if (points < 500) return "Gold Member";   // 250-499 points
+    if (points < 600) return "Platinum Member"; // 500-599 points
+    if (points < 1000) return "Diamond Member"; // 600-999 points
+    return "VIP Member"; // 1000+ points
+  };
 
-  return () => {
+  // Enhanced auto-scroll with user interaction handling - FIXED
+  const startAutoScroll = () => {
+    if (scrollInterval.current) {
+      clearInterval(scrollInterval.current);
+    }
+
+    scrollInterval.current = setInterval(() => {
+      if (isAutoScrolling && promotions.length > 0) {
+        setCurrentPromoIndex(prev => {
+          const nextIndex = (prev + 1) % promotions.length;
+          // Use scrollToOffset instead of scrollToIndex for better control
+          promoFlatListRef.current?.scrollToOffset({
+            offset: nextIndex * (SCREEN_WIDTH * 0.8 + 15),
+            animated: true,
+          });
+          return nextIndex;
+        });
+      }
+    }, 3000) as unknown as number;
+  };
+
+  const stopAutoScroll = () => {
     if (scrollInterval.current) {
       clearInterval(scrollInterval.current);
       scrollInterval.current = null;
     }
   };
-}, [promotions.length]);
 
-// Handlers
-const handleManualScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-  const contentOffset = event.nativeEvent.contentOffset.x;
-  const viewSize = event.nativeEvent.layoutMeasurement.width;
-  const newIndex = Math.round(contentOffset / viewSize);
+  const handleUserInteraction = () => {
+    setIsAutoScrolling(false);
+    stopAutoScroll();
 
-  if (scrollInterval.current) {
-    clearInterval(scrollInterval.current);
-    scrollInterval.current = null;
-  }
-  
-  setCurrentPromoIndex(newIndex);
-  
-  // Restart auto-scroll with proper scrolling behavior
-  scrollInterval.current = setInterval(() => {
-    setCurrentPromoIndex(prev => {
-      const nextIndex = (prev + 1) % promotions.length;
-      promoFlatListRef.current?.scrollToIndex({
-        index: nextIndex,
-        animated: true,
-      });
-      return nextIndex;
-    });
-  }, 3000);
-};
+    // Resume auto-scroll after 3 seconds of inactivity
+    if (autoScrollTimeout.current) {
+      clearTimeout(autoScrollTimeout.current);
+    }
 
-const handleImageLoad = () => setImagesLoaded(true);
+    autoScrollTimeout.current = setTimeout(() => {
+      setIsAutoScrolling(true);
+      startAutoScroll();
+    }, 3000) as unknown as number;
+  };
 
-// Memoized data
-  const filteredCategories = useMemo(() => 
-    categories.filter(cat => 
-      cat.name.toLowerCase().includes(search.toLowerCase())
-    ), 
-    [search]
-  );
+  // Load loyalty data on component mount
+  useEffect(() => {
+    loadLoyaltyData();
+    startAutoScroll();
+
+    return () => {
+      stopAutoScroll();
+      if (autoScrollTimeout.current) {
+        clearTimeout(autoScrollTimeout.current);
+      }
+    };
+  }, []);
+
+  // FAB animation
+  useEffect(() => {
+    scaleValue.value = withRepeat(
+      withTiming(1.1, { duration: 1500, easing: Easing.ease }),
+      -1,
+      true,
+    );
+  }, []);
+
+  // Fixed scroll handler for promotions
+  const promoScrollHandler = useAnimatedScrollHandler({
+    onScroll: (event) => {
+      scrollX.value = event.contentOffset.x;
+      const newIndex = Math.round(event.contentOffset.x / (SCREEN_WIDTH * 0.8 + 15));
+      if (newIndex >= 0 && newIndex < promotions.length) {
+        runOnJS(setCurrentPromoIndex)(newIndex);
+      }
+    },
+    onBeginDrag: () => {
+      runOnJS(handleUserInteraction)();
+    },
+    onMomentumEnd: () => {
+      runOnJS(handleUserInteraction)();
+    },
+  });
+
+  // Get time-based greeting
+  const getTimeBasedGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'Good Morning';
+    if (hour < 18) return 'Good Afternoon';
+    return 'Good Evening';
+  };
+
+  const styles = createMainStyles(theme, isDarkMode);
 
   return (
-   <>
+    <>
       <ScrollView
         style={styles.container}
-        contentContainerStyle={{ paddingBottom: 100 }}
-        accessibilityLabel="Home screen of K Bar app"
+        contentContainerStyle={styles.contentContainer}
+        showsVerticalScrollIndicator={false}
       >
-        {/* Welcome Section */}
-        <View style={styles.welcomeContainer}>
-          <Text style={styles.welcomeTitle} accessibilityRole="header">
-            Welcome to K Bar, Imos!{' '}
-            <MaterialCommunityIcons name="glass-cocktail" size={34} color="#0a84ff" />
-          </Text>
-          <Text style={styles.welcomeSubtitle}>
-            Cheers! Ready for your next drink?
-          </Text>
+        {/* Enhanced Hero Section */}
+        <View style={styles.heroSection}>
+          <LinearGradient
+            colors={isDarkMode ? HERO_GRADIENTS.dark : HERO_GRADIENTS.light}
+            style={styles.heroGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+          >
+            <View style={styles.heroContent}>
+              <Text style={styles.heroGreeting}>
+                {getTimeBasedGreeting()}, Imos! {' '}
+                <MaterialCommunityIcons name="glass-cocktail" size={28} color="#fff" />
+              </Text>
+              <Text style={styles.heroSubtitle}>
+                Ready to discover your next favorite drink?
+              </Text>
+              
+              {/* Loyalty Display */}
+              <LoyaltyDisplay loyaltyInfo={loyaltyInfo} />
+            </View>
+          </LinearGradient>
         </View>
 
-        {/* Search Section */}
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search drinks or snacks..."
-          placeholderTextColor="#999"
-          value={search}
-          onChangeText={setSearch}
-          accessibilityLabel="Search for drinks or snacks"
-          accessibilityHint="Type to filter drink and snack categories"
-        />
-
-        {/* Empty Search State */}
-        {search && filteredCategories.length === 0 && (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyStateText}>No categories match your search</Text>
-          </View>
-        )}
-
-        {/* Promotions Section */}
-        <Text style={styles.sectionTitle}>🔥 "Don't Miss Out"</Text>
-        {promotions.length > 0 ? (
-          <FlatList
-            ref={promoFlatListRef}
-            horizontal
-            data={promotions}
-            keyExtractor={item => item.id}
-            showsHorizontalScrollIndicator={false}
-            pagingEnabled
-            onMomentumScrollEnd={handleManualScroll}
-            scrollEventThrottle={16}
-            initialScrollIndex={0}
-            renderItem={({ item, index }) => (
-              <PromoCard
-                item={item}
-                isActive={index === currentPromoIndex}
-              />
-            )}
-            getItemLayout={(data, index) => ({
-              length: 270 + 15,
-              offset: (270 + 15) * index,
-              index,
-            })}
+        {/* Enhanced Search */}
+        <View style={styles.searchContainer}>
+          <MaterialCommunityIcons name="magnify" size={20} color={theme.textSecondary} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search drinks, snacks, or events..."
+            placeholderTextColor={theme.textSecondary}
+            value={search}
+            onChangeText={setSearch}
           />
-        ) : (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyStateText}>No current promotions</Text>
-          </View>
-        )}
+          {search ? (
+            <TouchableOpacity onPress={() => setSearch('')}>
+              <MaterialCommunityIcons name="close-circle" size={20} color={theme.textSecondary} />
+            </TouchableOpacity>
+          ) : null}
+        </View>
 
-        {/* Categories Section */}
-        <Text style={styles.sectionTitle}>What are you craving!? 😋</Text>
-        <FlatList
+        {/* Enhanced Promotions with Auto-scroll - FIXED */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>🔥 Hot Deals</Text>
+          {/* No "See All" button as requested */}
+        </View>
+        
+        <Animated.FlatList
+          ref={promoFlatListRef}
           horizontal
-          data={filteredCategories}
+          data={promotions}
           keyExtractor={item => item.id}
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ paddingVertical: 10 }}
-          renderItem={({ item }) => (
-            <CategoryTile
+          pagingEnabled
+          snapToInterval={SCREEN_WIDTH * 0.8 + 15}
+          decelerationRate="fast"
+          onScroll={promoScrollHandler}
+          scrollEventThrottle={16}
+          contentContainerStyle={styles.promoListContent}
+          renderItem={({ item, index }) => (
+            <EnhancedPromoCard
               item={item}
-              imagesLoaded={imagesLoaded}
-              handleImageLoad={handleImageLoad}
+              index={index}
+              scrollX={scrollX}
+              theme={theme}
+              isDarkMode={isDarkMode}
+            />
+          )}
+          getItemLayout={(_, index) => ({
+            length: SCREEN_WIDTH * 0.8 + 15,
+            offset: (SCREEN_WIDTH * 0.8 + 15) * index,
+            index,
+          })}
+        />
+        
+        {/* Promo Indicators */}
+        <View style={styles.promoIndicators}>
+          {promotions.map((_, index) => (
+            <View
+              key={index}
+              style={[
+                styles.promoIndicator,
+                index === currentPromoIndex && styles.promoIndicatorActive,
+              ]}
+            />
+          ))}
+        </View>
+
+        {/* Enhanced Categories */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>🎯 Popular Categories</Text>
+          <TouchableOpacity onPress={() => router.push('/(tabs)/menu')}>
+            <Text style={styles.seeAllText}>View All</Text>
+          </TouchableOpacity>
+        </View>
+        
+        <FlatList
+          horizontal
+          data={categories}
+          keyExtractor={item => item.id}
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.categoriesContent}
+          renderItem={({ item }) => (
+            <EnhancedCategoryTile
+              item={item}
+              theme={theme}
+              isDarkMode={isDarkMode}
             />
           )}
         />
 
-        {/* Upcoming Events Section */}
-        <Text style={styles.sectionTitle}>🎉 Upcoming Events & Specials</Text>
-        {events.length > 0 ? (
-          <FlatList
-            horizontal
-            data={events}
-            keyExtractor={item => item.id}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingVertical: 10 }}
-            renderItem={({ item }) => (
-              <EventCard
-                item={item}
-              />
-            )}
-          />
-        ) : (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyStateText}>No upcoming events at the moment.</Text>
-          </View>
-        )}
+        {/* Enhanced Events */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>🎉 Upcoming Events</Text>
+          {/* No "See All" button as requested */}
+        </View>
+        
+        <FlatList
+          horizontal
+          data={events}
+          keyExtractor={item => item.id}
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.eventsContent}
+          renderItem={({ item }) => (
+            <EnhancedEventCard
+              item={item}
+              theme={theme}
+              isDarkMode={isDarkMode}
+            />
+          )}
+        />
 
       </ScrollView>
 
-      {/* Quick Order FAB - Replaces Menu FAB */}
+      {/* Enhanced FAB */}
       <AnimatedTouchable
-        style={[styles.quickOrderFab, animatedStyle]}
-        onPressIn={pressIn}
-        onPressOut={pressOut}
+        style={[styles.quickOrderFab, useAnimatedStyle(() => ({
+          transform: [{ scale: scaleValue.value }]
+        }))]}
         onPress={() => router.push('/quick-order')}
-        activeOpacity={0.8}
-        accessibilityLabel="Quick Order"
-        accessibilityHint="Order popular items with one tap"
       >
         <LinearGradient
-          colors={['#ff6b6b', '#ff3838']}
+          colors={['#ff6b6b', '#ff3838'] as const}
+          style={styles.fabGradient}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          style={styles.fabGradient}
         >
-          <MaterialCommunityIcons name="lightning-bolt" size={28} color="white" />
+          <MaterialCommunityIcons name="lightning-bolt" size={24} color="white" />
+          <Text style={styles.fabText}>Quick</Text>
         </LinearGradient>
       </AnimatedTouchable>
     </>
   );
 }
 
-const styles = StyleSheet.create({
-  // Layout and Containers
-  container: {
-    flex: 1,
-    backgroundColor: '#121212',
-    padding: 20,
-  },
-  welcomeContainer: {
-    marginBottom: 25,
+// Loyalty Styles
+const createLoyaltyStyles = () => StyleSheet.create({
+  loyaltyContainer: {
+    flexDirection: 'row',
     alignItems: 'center',
-  },
-
-  // Text Styles
-  welcomeTitle: {
-    fontSize: 34,
-    fontWeight: 'bold',
-    color: '#0a84ff',
-    textShadowColor: 'rgba(10, 132, 255, 0.7)',
-    textShadowOffset: { width: 0, height: 3 },
-    textShadowRadius: 6,
-  },
-  welcomeSubtitle: {
-    marginTop: 6,
-    fontSize: 18,
-    color: '#aaa',
-    fontStyle: 'italic',
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#0a84ff',
-    marginTop: 25,
-    marginBottom: 10,
-  },
-
-  // Inputs
-  searchInput: {
-    backgroundColor: '#222',
-    borderRadius: 8,
-    paddingHorizontal: 15,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: '#fff',
-  },
-
-  // Category Styles
-  categoryTile: {
-    marginRight: 15,
-    alignItems: 'center',
-    width: 120,
-    backgroundColor: '#1f1f1f',
+    backgroundColor: 'rgba(255,255,255,0.1)',
     borderRadius: 16,
-    paddingVertical: 12,
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    shadowOffset: { width: 0, height: 2 },
+    padding: 16,
+    marginTop: 8,
   },
-  // ADDED: Missing imagePlaceholder style
-  imagePlaceholder: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    marginBottom: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#2a2a2a',
-  },
-  categoryImage: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    marginBottom: 10,
-  },
-  categoryText: {
-    color: '#fff',
+  userPoints: {
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  userTier: {
+    fontSize: 16,
+    color: 'rgba(255,255,255,0.8)',
+    marginLeft: 8,
+  },
+  welcomeMessage: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 4,
+  },
+  earnPointsText: {
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.8)',
     textAlign: 'center',
   },
+});
 
-  // Promo Carousel Styles
-  promoCard: {
-    width: 270,
-    height: 180,
-    marginRight: 15,
+// Enhanced Styles
+const createMainStyles = (theme: any, isDarkMode: boolean) => StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: theme.background,
+  },
+  contentContainer: {
+    paddingBottom: 100,
+  },
+  heroSection: {
+    height: 200,
+  },
+  heroGradient: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  heroContent: {
+    padding: 20,
+  },
+  heroGreeting: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 8,
+  },
+  heroSubtitle: {
+    fontSize: 16,
+    color: 'rgba(255,255,255,0.8)',
+    marginBottom: 20,
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: isDarkMode ? '#1f1f1f' : theme.surface,
+    margin: 20,
+    marginTop: -30,
     borderRadius: 16,
-    overflow: 'hidden',
-    backgroundColor: '#1f1f1f',
-    elevation: 5,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    elevation: 8,
     shadowColor: '#000',
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+  },
+  searchInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 16,
+    color: theme.text,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    marginTop: 25,
+    marginBottom: 15,
+  },
+  sectionTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: theme.text,
+  },
+  seeAllText: {
+    color: theme.primary,
+    fontWeight: '600',
+  },
+  promoListContent: {
+    paddingHorizontal: 20,
+  },
+  promoIndicators: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 15,
+  },
+  promoIndicator: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.textSecondary,
+    marginHorizontal: 4,
+  },
+  promoIndicatorActive: {
+    width: 20,
+    backgroundColor: theme.primary,
+  },
+  categoriesContent: {
+    paddingHorizontal: 20,
+  },
+  eventsContent: {
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+  },
+  quickOrderFab: {
+    position: 'absolute',
+    bottom: 80,
+    right: 20,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    elevation: 12,
+    shadowColor: '#ff6b6b',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+  },
+  fabGradient: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fabText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 'bold',
+    marginTop: 2,
+  },
+});
+
+const createPromoCardStyles = (theme: any, isDarkMode: boolean) => StyleSheet.create({
+  promoCardContainer: {
+    width: SCREEN_WIDTH * 0.8,
+    height: 200,
+    marginRight: 15,
+  },
+  promoCard: {
+    flex: 1,
+    borderRadius: 20,
+    overflow: 'hidden',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+  },
+  promoGradient: {
+    flex: 1,
     position: 'relative',
   },
   promoImage: {
     width: '100%',
-    height: 140,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    height: '100%',
+    opacity: 0.7,
+  },
+  promoOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+  },
+  badge: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  badgeText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#000',
   },
   promoTextContainer: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    padding: 15,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    borderBottomLeftRadius: 16,
-    borderBottomRightRadius: 16,
+    padding: 16,
   },
   promoText: {
     color: '#fff',
+    fontSize: 18,
     fontWeight: 'bold',
-    fontSize: 16,
-    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    marginBottom: 8,
+    textShadowColor: 'rgba(0,0,0,0.8)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 3,
   },
-  pressedShadow: {
-    transform: [{ scale: 0.98 }],
-    elevation: 12,
-    shadowColor: '#0a84ff',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.6,
-    shadowRadius: 8,
-  },
-  activePromo: {
-    borderColor: '#0a84ff',
-    borderWidth: 1,
-  },
-  //fab order button
-  quickOrderFab: {
-    position: 'absolute',
-    bottom: 70,
-    right: 20,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    shadowColor: 'rgba(10, 132, 255, 0.4)',
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 10,
-    elevation: 5,
-    zIndex: 10,
-  },
-  fabGradient: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 28,
-    justifyContent: 'center',
+  promoCta: {
+    flexDirection: 'row',
     alignItems: 'center',
   },
+  promoCtaText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginRight: 4,
+  },
+  pressedShadow: {
+    transform: [{ scale: 0.96 }],
+  },
+});
 
+const createCategoryTileStyles = (theme: any, isDarkMode: boolean) => StyleSheet.create({
+  categoryTile: {
+    marginRight: 15,
+    alignItems: 'center',
+    width: 100,
+  },
+  categoryImageContainer: {
+    position: 'relative',
+    marginBottom: 8,
+  },
+  categoryImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+  },
+  trendingBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    backgroundColor: '#ff4757',
+    borderRadius: 8,
+    padding: 2,
+  },
+  popularityBar: {
+    position: 'absolute',
+    bottom: -6,
+    left: 10,
+    right: 10,
+    height: 3,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    borderRadius: 1.5,
+  },
+  popularityFill: {
+    height: '100%',
+    backgroundColor: theme.primary,
+    borderRadius: 1.5,
+  },
+  categoryText: {
+    color: theme.text,
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 2,
+  },
+  popularityText: {
+    color: theme.textSecondary,
+    fontSize: 10,
+  },
+  pressedShadow: {
+    transform: [{ scale: 0.95 }],
+  },
+});
+
+const createEventCardStyles = (theme: any, isDarkMode: boolean) => StyleSheet.create({
   eventCard: {
-    width: 260,
-    height: 180,
+    width: 280,
+    height: 160,
     borderRadius: 16,
     overflow: 'hidden',
-    backgroundColor: '#1f1f1f',
     marginRight: 15,
-    elevation: 5,
+    elevation: 6,
     shadowColor: '#000',
-    shadowOpacity: 0.35,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
     shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    position: 'relative',
   },
   eventImage: {
     width: '100%',
-    height: 100,
+    height: '100%',
   },
-  eventTextContainer: {
-    padding: 12,
-    flex: 1,
-    justifyContent: 'space-between',
+  eventGradient: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
+  },
+  eventContent: {
+    padding: 16,
   },
   eventTitle: {
-    color: '#0a84ff',
-    fontWeight: 'bold',
+    color: '#fff',
     fontSize: 18,
+    fontWeight: 'bold',
     marginBottom: 4,
   },
   eventDate: {
-    color: '#aaa',
-    fontSize: 14,
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 12,
     marginBottom: 6,
   },
   eventTeaser: {
-    color: '#ddd',
-    fontSize: 14,
-    flexShrink: 1,
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 12,
+    marginBottom: 12,
+  },
+  eventFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  countdownText: {
+    color: '#ffd700',
+    fontSize: 11,
+    fontWeight: '600',
   },
   eventButton: {
-    marginTop: 8,
-    color: '#1e90ff',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  eventButtonText: {
+    color: theme.primary,
+    fontSize: 12,
     fontWeight: '600',
-    fontSize: 14,
-    textDecorationLine: 'underline',
+    marginRight: 2,
   },
-
-  // Empty States
-  emptyState: {
-    padding: 15,
-    backgroundColor: '#222',
+  liveBadge: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 0, 0, 0.9)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     borderRadius: 8,
-    marginTop: 10,
   },
-  emptyStateText: {
+  livePulse: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#fff',
+    marginRight: 4,
+  },
+  liveText: {
     color: '#fff',
-    textAlign: 'center',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  pressedShadow: {
+    transform: [{ scale: 0.96 }],
   },
 });
